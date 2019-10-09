@@ -5,9 +5,13 @@ import numpy as np
 import cv2
 import tensorflow as tf
 import tensorflow.contrib.tensorrt as trt
+import logging
 
+import rospy
+from std_msgs.msg import String
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge ,CvBridgeError
 
-from utils.camera_ros import  Camera
 from utils.od_utils import  load_trt_pb, detect
 from utils.visualization import BBoxVisualization
 
@@ -16,6 +20,11 @@ DEFAULT_LABELMAP = 'third_party/models/research/object_detection/' \
                    'data/mscoco_label_map.pbtxt'
 WINDOW_NAME = 'CameraTFTRTDemo'
 BBOX_COLOR = (0, 255, 0)  # green
+
+def ros_cv_img(bridge):
+    sen_img = rospy.wait_for_message("/camera/color/image_raw",Image)
+    cv_image =bridge.imgmsg_to_cv2(sen_img, "bgr8")
+    return cv_image
 
 def read_label_map(path_to_labels):
     """Read from the label map file and return a class dictionary which
@@ -59,7 +68,7 @@ def set_full_screen(full_scrn):
     prop = cv2.WINDOW_FULLSCREEN if full_scrn else cv2.WINDOW_NORMAL
     cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, prop)
 
-def loop_and_detect(cam, tf_sess, conf_th, vis, od_type):
+def loop_and_detect(bridge,tf_sess, conf_th, vis, od_type):
     """Loop, grab images from camera, and do object detection.
 
     # Arguments
@@ -77,8 +86,8 @@ def loop_and_detect(cam, tf_sess, conf_th, vis, od_type):
             # Check to see if the user has closed the display window.
             # If yes, terminate the while loop.
             break
-
-        img = cam.read()
+        
+        img = ros_cv_img(bridge)
         if img is not None:
             box, conf, cls = detect(img, tf_sess, conf_th, od_type=od_type)
             img = vis.draw_bboxes(img, box, conf, cls)
@@ -101,30 +110,42 @@ def loop_and_detect(cam, tf_sess, conf_th, vis, od_type):
             set_full_screen(full_scrn)
 
 def main():
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    logging.getLogger('tensorflow').propagate = False
+
+
+    logger.info('reading label map')
     cls_dict = read_label_map(DEFAULT_LABELMAP)
+
     pb_path = './data/{}_trt.pb'.format(DEFAULT_MODEL)
     log_path = './logs/{}_trt'.format(DEFAULT_MODEL)
     
-    cam =Camera()
-    cam.open()
+    logger.info('opening ros camera device/file')
+    rospy.init_node('image_converter', anonymous=True)
+    bridge = CvBridge()
 
+    logger.info('loading TRT graph from pb: %s' % pb_path)
     trt_graph = load_trt_pb(pb_path)
+
+    logger.info('starting up TensorFlow session')
     tf_config = tf.ConfigProto()
     tf_config.gpu_options.allow_growth = True
     tf_sess = tf.Session(config=tf_config, graph=trt_graph)
 
+    logger.info('warming up the TRT graph with a dummy image')
     od_type = 'faster_rcnn' if 'faster_rcnn' in DEFAULT_MODEL else 'ssd'
-    dummy_img = np.zeros((720, 1280, 3), dtype=np.uint8)
+    dummy_img = np.zeros((480, 640, 3), dtype=np.uint8)
     _, _, _ = detect(dummy_img, tf_sess, conf_th=.3, od_type=od_type)
 
+    logger.info('starting to loop and detect')
     detection_conf_th =0.3
     vis = BBoxVisualization(cls_dict)
-    open_display_window(cam.img_width, cam.img_height)
-    loop_and_detect(cam, tf_sess,  detection_conf_th, vis, od_type=od_type)
+    open_display_window(640, 480)
+    loop_and_detect(bridge, tf_sess,  detection_conf_th, vis, od_type=od_type)
 
-    cam.stop()  # terminate the sub-thread in camera
+    logger.info('cleaning up')
     tf_sess.close()
-    cam.release()
     cv2.destroyAllWindows()
 
 
