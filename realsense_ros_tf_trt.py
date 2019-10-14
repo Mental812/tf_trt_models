@@ -11,6 +11,7 @@ import rospy
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge ,CvBridgeError
+from sub_image import CImageSubscriber
 
 from utils.od_utils import  load_trt_pb, detect
 from utils.visualization import BBoxVisualization
@@ -21,10 +22,6 @@ DEFAULT_LABELMAP = 'third_party/models/research/object_detection/' \
 WINDOW_NAME = 'CameraTFTRTDemo'
 BBOX_COLOR = (0, 255, 0)  # green
 
-def ros_cv_img(bridge):
-    sen_img = rospy.wait_for_message("/camera/color/image_raw",Image)
-    cv_image =bridge.imgmsg_to_cv2(sen_img, "bgr8")
-    return cv_image
 
 def read_label_map(path_to_labels):
     """Read from the label map file and return a class dictionary which
@@ -68,7 +65,7 @@ def set_full_screen(full_scrn):
     prop = cv2.WINDOW_FULLSCREEN if full_scrn else cv2.WINDOW_NORMAL
     cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, prop)
 
-def loop_and_detect(bridge,tf_sess, conf_th, vis, od_type):
+def loop_and_detect(cam,tf_sess, conf_th, vis, od_type):
     """Loop, grab images from camera, and do object detection.
 
     # Arguments
@@ -87,7 +84,7 @@ def loop_and_detect(bridge,tf_sess, conf_th, vis, od_type):
             # If yes, terminate the while loop.
             break
         
-        img = ros_cv_img(bridge)
+        img = cam.getImage()
         if img is not None:
             box, conf, cls = detect(img, tf_sess, conf_th, od_type=od_type)
             img = vis.draw_bboxes(img, box, conf, cls)
@@ -122,8 +119,8 @@ def main():
     log_path = './logs/{}_trt'.format(DEFAULT_MODEL)
     
     logger.info('opening ros camera device/file')
-    rospy.init_node('image_converter', anonymous=True)
-    bridge = CvBridge()
+
+    cam = CImageSubscriber("/camera/color/image_raw")
 
     logger.info('loading TRT graph from pb: %s' % pb_path)
     trt_graph = load_trt_pb(pb_path)
@@ -142,7 +139,7 @@ def main():
     detection_conf_th =0.3
     vis = BBoxVisualization(cls_dict)
     open_display_window(640, 480)
-    loop_and_detect(bridge, tf_sess,  detection_conf_th, vis, od_type=od_type)
+    loop_and_detect(cam,tf_sess,  detection_conf_th, vis, od_type=od_type)
 
     logger.info('cleaning up')
     tf_sess.close()
